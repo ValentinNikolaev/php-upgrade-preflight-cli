@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace PhpUpgradePreflight\Cli;
 
+use PhpUpgradePreflight\Core\Model\ExtensionAssumption;
+use PhpUpgradePreflight\Core\Model\ExtensionAssumptionSet;
 use PhpUpgradePreflight\Core\Model\ReportFormat;
 
 final class CommandLineParser
@@ -17,6 +19,7 @@ final class CommandLineParser
      *     from-php: ?string,
      *     source: list<string>,
      *     framework: list<string>,
+     *     extension-assumptions?: list<ExtensionAssumption>,
      *     format: string,
      *     output: ?string,
      *     debug: bool
@@ -50,8 +53,10 @@ final class CommandLineParser
             'debug' => false,
         ];
         $seen = [];
+        $presentExtensions = [];
+        $absentExtensions = [];
 
-        foreach ($arguments as $argument) {
+        foreach ($arguments as $index => $argument) {
             if ($argument === '--debug') {
                 if (isset($seen['debug'])) {
                     throw new \InvalidArgumentException('Option "--debug" may only be specified once.');
@@ -63,7 +68,7 @@ final class CommandLineParser
             }
 
             if (!str_starts_with($argument, '--') || !str_contains($argument, '=')) {
-                throw new \InvalidArgumentException(sprintf('Unsupported argument "%s".', $argument));
+                throw new \InvalidArgumentException(sprintf('Unsupported argument at position %d.', $index));
             }
 
             [$name, $value] = explode('=', substr($argument, 2), 2);
@@ -72,13 +77,23 @@ final class CommandLineParser
                 throw new \InvalidArgumentException('Option "--debug" does not accept a value.');
             }
 
+            if ($name === 'with-extension') {
+                $presentExtensions[] = $value;
+                continue;
+            }
+
+            if ($name === 'without-extension') {
+                $absentExtensions[] = $value;
+                continue;
+            }
+
             if (in_array($name, ['target', 'source', 'framework'], true)) {
                 $options[$name][] = $value;
                 continue;
             }
 
             if (!array_key_exists($name, $options)) {
-                throw new \InvalidArgumentException(sprintf('Unknown option "--%s".', $name));
+                throw new \InvalidArgumentException('Unknown option.');
             }
 
             if (isset($seen[$name])) {
@@ -94,6 +109,10 @@ final class CommandLineParser
         }
 
         $options['format'] = ReportFormat::normalize((string) $options['format']);
+        $extensionAssumptions = ExtensionAssumptionSet::fromInputs($presentExtensions, $absentExtensions)->all();
+        if ($extensionAssumptions !== []) {
+            $options['extension-assumptions'] = $extensionAssumptions;
+        }
 
         return $options;
     }

@@ -11,6 +11,7 @@ use PhpUpgradePreflight\Core\Model\UpgradeTarget;
 use PhpUpgradePreflight\Core\Reporting\JsonReportWriter;
 use PhpUpgradePreflight\Core\Reporting\MarkdownReportWriter;
 use PhpUpgradePreflight\Core\Reporting\ReportFileWriter;
+use PhpUpgradePreflight\Core\Support\PathExposurePolicy;
 use PhpUpgradePreflight\Core\Support\SensitiveOutputRedactor;
 
 final class AnalyzeCommand
@@ -72,7 +73,8 @@ final class AnalyzeCommand
                 $options['framework'],
                 $options['format'],
                 $options['output'],
-                $options['debug']
+                $options['debug'],
+                $options['extension-assumptions'] ?? []
             );
             $this->frameworkIntegrations->assertAvailable($request->frameworks());
 
@@ -98,7 +100,10 @@ final class AnalyzeCommand
 
             if ($request->outputPath() !== null) {
                 $writtenPath = $this->reportFileWriter->write($request->projectPath(), $request->outputPath(), $rendered);
-                fwrite($this->stdout, sprintf("Wrote report to %s\n", $writtenPath));
+                fwrite($this->stdout, sprintf(
+                    "Wrote report to %s\n",
+                    PathExposurePolicy::operationalPath($writtenPath)
+                ));
             } else {
                 fwrite($this->stdout, $rendered);
             }
@@ -122,6 +127,9 @@ Options:
   --target=PACKAGE:VALUE  Target package constraint; repeatable
   --target-php=VERSION    Explicit target PHP platform version
   --from-php=VALUE        Current project PHP version
+  --with-extension=EXT[:VERSION]
+                          Assume an extension is present; repeatable
+  --without-extension=EXT Assume an extension is absent; repeatable
   --source=PATH           Additional source path to scan; repeatable
   --framework=NAME        Framework integration to enable; repeatable
   --format=json|markdown  Report format (default: json)

@@ -68,6 +68,8 @@ final class AnalyzeCommandTest extends TestCase
             '--from-php=7.4',
             '--source=packages/cli/src',
             '--framework=laravel',
+            '--with-extension=ext-intl:72.1',
+            '--without-extension=ext-xdebug',
             '--format=markdown',
             '--debug',
         ]);
@@ -82,6 +84,10 @@ final class AnalyzeCommandTest extends TestCase
         self::assertSame('7.4', $this->analyzer->request->fromPhp());
         self::assertSame(['packages/cli/src'], $this->analyzer->request->sourcePaths());
         self::assertSame(['laravel'], $this->analyzer->request->frameworks());
+        self::assertSame(['ext-intl', 'ext-xdebug'], array_map(
+            static fn ($assumption): string => $assumption->name(),
+            $this->analyzer->request->extensionAssumptions()
+        ));
         self::assertSame(ReportFormat::MARKDOWN, $this->analyzer->request->format());
         self::assertTrue($this->analyzer->request->debug());
         self::assertStringStartsWith('# PHP Upgrade Preflight', $this->streamContents($this->stdout));
@@ -186,6 +192,12 @@ final class AnalyzeCommandTest extends TestCase
             [['--path=' . $projectPath, '--target-php=8.2', '--from-php=^7.4'], 'Current PHP version'],
             [['--path=' . $projectPath, '--target=php:8.1', '--target-php=8.2'], 'Conflicting PHP targets'],
             [['--path=' . $projectPath, '--target-php=8.2', '--source=missing'], 'Source path'],
+            [[
+                '--path=' . $projectPath,
+                '--target-php=8.2',
+                '--with-extension=ext-json',
+                '--without-extension=ext-json',
+            ], 'may only be specified once'],
         ];
     }
 
@@ -296,7 +308,7 @@ final class AnalyzeCommandTest extends TestCase
         ]);
 
         self::assertSame(AnalyzeCommand::SUCCESS, $exitCode);
-        self::assertSame(['laravel'], $factory->registeredNames);
+        self::assertSame(['laravel', 'test-framework'], $factory->registeredNames);
         self::assertSame(['laravel'], $factory->detectedNames);
     }
 
@@ -339,7 +351,7 @@ final class AnalyzeCommandTest extends TestCase
 
             self::assertSame(0, $exitCode);
             self::assertSame('', $this->streamContents($this->stderr));
-            self::assertSame('0.6', $report['metadata']['schema_version']);
+            self::assertSame('0.7', $report['metadata']['schema_version']);
             self::assertSame('unknown', $report['resolution']['status']);
             self::assertSame('lockfile_missing', $report['resolution']['scenarios'][0]['outcome']);
         } finally {
