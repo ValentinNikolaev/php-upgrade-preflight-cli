@@ -70,6 +70,11 @@ final class AnalyzeCommandTest extends TestCase
             '--framework=laravel',
             '--with-extension=ext-intl:72.1',
             '--without-extension=ext-xdebug',
+            '--composer-mode=restricted',
+            '--composer-executable=/tools/composer.phar',
+            '--composer-version=^2.8',
+            '--composer-timeout=120',
+            '--composer-diagnostic-timeout=15',
             '--format=markdown',
             '--debug',
         ]);
@@ -89,6 +94,11 @@ final class AnalyzeCommandTest extends TestCase
             $this->analyzer->request->extensionAssumptions()
         ));
         self::assertSame(ReportFormat::MARKDOWN, $this->analyzer->request->format());
+        self::assertSame('restricted', $this->analyzer->request->composerExecution()->mode());
+        self::assertSame('/tools/composer.phar', $this->analyzer->request->composerExecution()->executable());
+        self::assertSame('^2.8', $this->analyzer->request->composerExecution()->expectedVersion());
+        self::assertSame(120, $this->analyzer->request->composerExecution()->scenarioTimeoutSeconds());
+        self::assertSame(15, $this->analyzer->request->composerExecution()->diagnosticTimeoutSeconds());
         self::assertTrue($this->analyzer->request->debug());
         self::assertStringStartsWith('# PHP Upgrade Preflight', $this->streamContents($this->stdout));
         self::assertStringContainsString(
@@ -96,6 +106,104 @@ final class AnalyzeCommandTest extends TestCase
             $this->streamContents($this->stdout)
         );
         self::assertSame('', $this->streamContents($this->stderr));
+    }
+
+    public function testItLoadsAProfileAndPassesItToTheAnalyzer(): void
+    {
+        $profilePath = dirname(__DIR__, 4) . '/tests/fixtures/platform-profiles/complete-php-83.json';
+        $exitCode = $this->command->run([
+            'upgrade-intel',
+            'analyze',
+            '--path=' . dirname(__DIR__, 4),
+            '--target-platform-profile=' . $profilePath,
+        ]);
+
+        self::assertSame(AnalyzeCommand::SUCCESS, $exitCode);
+        self::assertNotNull($this->analyzer->request);
+        self::assertNotNull($this->analyzer->request->targetPlatformProfile());
+        self::assertSame('file', $this->analyzer->request->targetPlatformProfile()->provenance());
+        self::assertSame('1.0', $this->analyzer->request->targetPlatformProfile()->schemaVersion());
+        self::assertSame('8.3.0', $this->analyzer->request->targetPhp());
+        self::assertSame('', $this->streamContents($this->stderr));
+    }
+
+    /** @dataProvider invalidProfileProvider */
+    public function testItRejectsInvalidProfilesWithoutDisclosingTheirPath(string $profilePath, string $message): void
+    {
+        $exitCode = $this->command->run([
+            'upgrade-intel',
+            'analyze',
+            '--path=' . dirname(__DIR__, 4),
+            '--target-platform-profile=' . $profilePath,
+        ]);
+        $diagnostic = $this->streamContents($this->stderr);
+
+        self::assertSame(AnalyzeCommand::INVALID, $exitCode);
+        self::assertNull($this->analyzer->request);
+        self::assertStringStartsWith('Invalid invocation:', $diagnostic);
+        self::assertStringContainsString($message, $diagnostic);
+        self::assertStringNotContainsString($profilePath, $diagnostic);
+    }
+
+    /** @return list<array{string, string}> */
+    public function invalidProfileProvider(): array
+    {
+        return [
+            [
+                dirname(__DIR__, 4) . '/tests/fixtures/platform-profiles/missing-secret-profile.json',
+                'Target platform profile file could not be read.',
+            ],
+            [
+                dirname(__DIR__, 4) . '/tests/fixtures/platform-profiles',
+                'Target platform profile file could not be read.',
+            ],
+            [
+                dirname(__DIR__, 4) . '/tests/fixtures/platform-profiles/malformed.json',
+                'Target platform profile contains invalid JSON.',
+            ],
+            [
+                dirname(__DIR__, 4) . '/tests/fixtures/platform-profiles/invalid-package-name.json',
+                'Target platform package name is unsupported.',
+            ],
+        ];
+    }
+
+    /**
+     * @dataProvider conflictingProfileInputProvider
+     * @param list<string> $profileArguments
+     */
+    public function testItRejectsProfileConflictsBeforeRunningAnalysis(
+        array $profileArguments,
+        string $message
+    ): void {
+        $exitCode = $this->command->run(array_merge(
+            ['upgrade-intel', 'analyze', '--path=' . dirname(__DIR__, 4)],
+            $profileArguments
+        ));
+
+        self::assertSame(AnalyzeCommand::INVALID, $exitCode);
+        self::assertNull($this->analyzer->request);
+        self::assertStringStartsWith('Invalid invocation:', $this->streamContents($this->stderr));
+        self::assertStringContainsString($message, $this->streamContents($this->stderr));
+    }
+
+    /** @return list<array{list<string>, string}> */
+    public function conflictingProfileInputProvider(): array
+    {
+        return [
+            [[
+                '--target-platform-profile=' . dirname(__DIR__, 4) . '/tests/fixtures/platform-profiles/partial-php-83-ext-json.json',
+                '--without-extension=ext-json',
+            ], 'contradicts the target platform profile'],
+            [[
+                '--target-platform-profile=' . dirname(__DIR__, 4) . '/tests/fixtures/platform-profiles/partial-php-83-ext-json.json',
+                '--with-extension=ext-json:8.2.0',
+            ], 'contradicts the target platform profile'],
+            [[
+                '--target-platform-profile=' . dirname(__DIR__, 4) . '/tests/fixtures/platform-profiles/complete-php-83.json',
+                '--with-extension=ext-json',
+            ], 'presence-only'],
+        ];
     }
 
     public function testItReturnsFailureForInvalidInputWithoutCallingTheAnalyzer(): void
@@ -129,7 +237,9 @@ final class AnalyzeCommandTest extends TestCase
 
         self::assertSame(0, $exitCode);
         self::assertNull($this->analyzer->request);
-        self::assertStringStartsWith('Usage:', $this->streamContents($this->stdout));
+        $help = $this->streamContents($this->stdout);
+        self::assertStringStartsWith('Usage:', $help);
+        self::assertStringContainsString('--target-platform-profile=PATH', $help);
     }
 
     public function testItRejectsAnOutputPathInsideTheAnalyzedProject(): void
@@ -198,6 +308,11 @@ final class AnalyzeCommandTest extends TestCase
                 '--with-extension=ext-json',
                 '--without-extension=ext-json',
             ], 'may only be specified once'],
+            [[
+                '--path=' . $projectPath,
+                '--target-php=8.2',
+                '--with-extension=ext-a..b',
+            ], 'must use Composer ext-name syntax'],
         ];
     }
 
@@ -223,6 +338,46 @@ final class AnalyzeCommandTest extends TestCase
         self::assertSame(AnalyzeCommand::INVALID, $exitCode);
         self::assertNull($this->analyzer->request);
         self::assertStringContainsString('Install the matching adapter package', $this->streamContents($this->stderr));
+    }
+
+    public function testItReportsAnInstalledPackageWhoseAdapterManifestWasSkipped(): void
+    {
+        $brokenPackage = rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR)
+            . DIRECTORY_SEPARATOR . 'php-upgrade-preflight-cli-' . bin2hex(random_bytes(8));
+        mkdir($brokenPackage, 0700, true);
+        file_put_contents(
+            $brokenPackage . DIRECTORY_SEPARATOR . 'composer.json',
+            '{"name":"vendor/broken","extra":{"php-upgrade-preflight":"yes"}}'
+        );
+
+        try {
+            $command = new AnalyzeCommand(
+                $this->analyzer,
+                $this->stdout,
+                $this->stderr,
+                null,
+                null,
+                new FrameworkIntegrationRegistry(null, ['vendor/broken' => $brokenPackage])
+            );
+
+            $exitCode = $command->run([
+                'upgrade-intel',
+                'analyze',
+                '--path=' . dirname(__DIR__, 4),
+                '--target-php=8.2',
+            ]);
+
+            // The unreadable manifest costs its own package, not the run: the report is
+            // still produced, and the skip is named on stderr so an adapter the user
+            // believes is active is not silently missing.
+            self::assertSame(AnalyzeCommand::SUCCESS, $exitCode);
+            self::assertStringContainsString(
+                'Skipped framework adapter discovery for installed package "vendor/broken"',
+                $this->streamContents($this->stderr)
+            );
+        } finally {
+            (new Filesystem())->remove($brokenPackage);
+        }
     }
 
     public function testItReturnsFailureForAnInternalAnalyzerError(): void
@@ -308,7 +463,7 @@ final class AnalyzeCommandTest extends TestCase
         ]);
 
         self::assertSame(AnalyzeCommand::SUCCESS, $exitCode);
-        self::assertSame(['laravel', 'test-framework'], $factory->registeredNames);
+        self::assertSame(['laravel', 'legacy-test-framework', 'test-framework'], $factory->registeredNames);
         self::assertSame(['laravel'], $factory->detectedNames);
     }
 
@@ -351,7 +506,7 @@ final class AnalyzeCommandTest extends TestCase
 
             self::assertSame(0, $exitCode);
             self::assertSame('', $this->streamContents($this->stderr));
-            self::assertSame('0.7', $report['metadata']['schema_version']);
+            self::assertSame('0.8', $report['metadata']['schema_version']);
             self::assertSame('unknown', $report['resolution']['status']);
             self::assertSame('lockfile_missing', $report['resolution']['scenarios'][0]['outcome']);
         } finally {
